@@ -1,0 +1,134 @@
+import cv2
+import numpy as np
+import pyttsx3
+import time
+try:
+    import RPi.GPIO as GPIO
+except ImportError:
+    print("RPi.GPIO not available, using mock mode for testing")
+    GPIO = None
+
+# Initialize text-to-speech
+engine = pyttsx3.init()
+engine.setProperty('rate', 150) # Slow, clear speech for autism-friendliness
+engine.setProperty('voice', 'english') # Neutral voice
+
+# Setup GPIO for HC-SR04 (if using Raspberry Pi)
+if GPIO:
+    GPIO.setmode(GPIO.BCM)
+    TRIG = 17
+    ECHO = 27
+    GPIO.setup(TRIG, GPIO.OUT)
+    GPIO.setup(ECHO, GPIO.IN)
+
+# Initialize camera with fallback
+cap = cv2.VideoCapture(0) # Use 0 for default webcam
+if not cap.isOpened():
+    print("No camera found, creating simulation mode...")
+    cap = None
+    SIMULATION_MODE = True
+else:
+    SIMULATION_MODE = False
+
+def measure_distance():
+    if not GPIO:
+        return 100 # Mock distance for testing
+    # Send pulse
+    GPIO.output(TRIG, False)
+    time.sleep(0.2)
+    GPIO.output(TRIG, True)
+    time.sleep(0.00001)
+    GPIO.output(TRIG, False)
+
+    # Measure echo
+    while GPIO.input(ECHO) == 0:
+        pulse_start = time.time()
+    while GPIO.input(ECHO) == 1:
+        pulse_end = time.time()
+
+    pulse_duration = pulse_end - pulse_start
+    distance = pulse_duration * 17150 # Speed of sound (343m/s) / 2
+    return round(distance, 2)
+
+def analyze_frame(frame):
+    # Convert to grayscale and apply edge detection
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 100, 200)
+
+    # Split frame into left and right halves to detect open paths
+    height, width = edges.shape
+    left_half = edges[:, :width//2]
+    right_half = edges[:, width//2:]
+
+    # Count edge pixels (lower count = more open space)
+    left_score = np.sum(left_half) / 255
+    right_score = np.sum(right_half) / 255
+
+    return "left" if left_score < right_score else "right"
+
+def provide_guidance(distance, direction):
+    if distance < 50: # Threshold in cm
+        instruction = f"Turn {direction} now"
+        print(instruction)
+        engine.say(instruction)
+        engine.runAndWait()
+
+try:
+    if SIMULATION_MODE:
+        print("=== NAVIGATION SYSTEM DEMO MODE ===")
+        print("Camera not available - running demonstration")
+        print("This simulates the navigation assistance for visually impaired users")
+        print("Press Ctrl+C to stop\n")
+    
+    while True:
+        if SIMULATION_MODE:
+            # Simulate navigation with varying distances and obstacles
+            import random
+            distance = random.randint(10, 200)  # Random distance between 10-200cm
+            direction = random.choice(["left", "right"])
+            print(f"[DEMO] Distance ahead: {distance} cm")
+            
+            # Provide guidance if obstacle is too close
+            provide_guidance(distance, direction)
+            
+            time.sleep(3)  # Slower for demo
+        else:
+            print("=== NAVIGATION SYSTEM - CAMERA MODE ===")
+            print("Camera detected - starting real-time navigation")
+            print("Press 'q' to quit\n")
+            
+            ret, frame = cap.read()
+            if not ret:
+                print("ERROR: Could not read from camera")
+                break
+
+            # Measure distance using ultrasonic sensor
+            distance = measure_distance()
+            print(f"Ultrasonic distance: {distance} cm")
+
+            # Analyze camera frame for open path
+            direction = analyze_frame(frame)
+            print(f"Recommended direction: {direction}")
+
+            # Provide guidance if obstacle is too close
+            provide_guidance(distance, direction)
+
+            # Display frame for debugging (remove this for actual use)
+            try:
+                cv2.imshow('Navigation Camera View', frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+            except:
+                print("Display not available - running in headless mode")
+
+            time.sleep(0.1) # Control loop speed
+
+except KeyboardInterrupt:
+    print("Stopped by user")
+
+finally:
+    if cap and not SIMULATION_MODE:
+        cap.release()
+        cv2.destroyAllWindows()
+    if GPIO:
+        GPIO.cleanup()
